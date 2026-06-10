@@ -73,10 +73,11 @@ jobs:
           security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
           security import "${CERTIFICATE_PATH}" \
             -P "${CODESIGN_CERTIFICATE_PASSWORD}" \
-            -A \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
             -t cert \
             -f pkcs12 \
-            -k "${KEYCHAIN_PATH}"
+            -k "${KEYCHAIN_PATH}" >/dev/null
           security list-keychains -d user -s "${KEYCHAIN_PATH}"
           security default-keychain -s "${KEYCHAIN_PATH}"
           security set-key-partition-list \
@@ -84,8 +85,6 @@ jobs:
             -s \
             -k "${KEYCHAIN_PASSWORD}" \
             "${KEYCHAIN_PATH}"
-          
-          security find-identity -v -p codesigning "${KEYCHAIN_PATH}"
 
       - name: Build app
         env:
@@ -117,7 +116,13 @@ jobs:
           test -d "${APP_PATH}"
 
           codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
-          codesign -dv --verbose=4 "${APP_PATH}"
+          SIGNATURE_INFO="$(codesign -dv --verbose=4 "${APP_PATH}" 2>&1)"
+          echo "${SIGNATURE_INFO}"
+
+          if ! grep -q '^Authority=Morton Li$' <<< "${SIGNATURE_INFO}"; then
+            echo "::error::Velora.app was not signed with the expected Morton Li certificate."
+            exit 1
+          fi
 
           RELEASE_DIR="release"
           DMG_STAGING_DIR="$(mktemp -d)"
