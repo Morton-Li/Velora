@@ -206,9 +206,11 @@ struct ContentView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     ContentView()
 }
+#endif
 
 private struct DeleteDownloadConfirmationSheet: View {
     let download: DownloadItem
