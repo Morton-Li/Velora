@@ -1,0 +1,170 @@
+name: Velora macOS Build and Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Velora for ${{ matrix.name }}
+    environment: codesign
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            runner: macos-15-intel
+            xcode_arch: x86_64
+          - name: aarch64
+            runner: macos-15
+            xcode_arch: arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve build metadata
+        id: build_metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="v0.0.0-dev.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download aria2 release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wget -O aria2c.tar.gz https://github.com/Morton-Li/Aria2-MacOS-Builder/releases/latest/download/aria2c-macos-${{ matrix.xcode_arch }}.tar.gz
+
+          mkdir -p vendor/aria2
+          tar -xzf aria2c.tar.gz -C vendor/aria2 --no-same-owner --no-same-permissions
+          mv vendor/aria2/aria2c-macos-${{ matrix.xcode_arch }} vendor/aria2/aria2c
+          chmod 755 vendor/aria2/aria2c
+          file vendor/aria2/aria2c
+
+      - name: Import code signing certificate
+        env:
+          CODESIGN_CERTIFICATE_P12_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_P12_BASE64 }}
+          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CERTIFICATE_PATH="${RUNNER_TEMP}/codesign.p12"
+          printf '%s' "${CODESIGN_CERTIFICATE_P12_BASE64}" | base64 -d > "${CERTIFICATE_PATH}"
+
+          KEYCHAIN_PATH="${RUNNER_TEMP}/codesign.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security import "${CERTIFICATE_PATH}" \
+            -P "${CODESIGN_CERTIFICATE_PASSWORD}" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "${KEYCHAIN_PATH}"
+          security list-keychains -d user -s "${KEYCHAIN_PATH}"
+          security default-keychain -s "${KEYCHAIN_PATH}"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "${KEYCHAIN_PASSWORD}" \
+            "${KEYCHAIN_PATH}"
+          
+          security find-identity -v -p codesigning "${KEYCHAIN_PATH}"
+
+      - name: Build app
+        env:
+          VELORA_VERSION: ${{ steps.build_metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo xcode-select --switch /Applications/Xcode_16.4.app
+
+          xcodebuild \
+            -project Velora.xcodeproj \
+            -scheme Velora \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            -destination "generic/platform=macOS" \
+            ARCHS="${{ matrix.xcode_arch }}" \
+            ONLY_ACTIVE_ARCH=NO \
+            ENABLE_PREVIEWS=NO \
+            build
+
+      - name: Package app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="build/DerivedData/Build/Products/Release/Velora.app"
+
+          test -d "${APP_PATH}"
+
+          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+          codesign -dv --verbose=4 "${APP_PATH}"
+
+          RELEASE_DIR="release"
+          DMG_STAGING_DIR="$(mktemp -d)"
+          DMG_PATH="${RELEASE_DIR}/Velora-${{ steps.build_metadata.outputs.tag }}-macos-${{ matrix.name }}.dmg"
+
+          mkdir -p "${RELEASE_DIR}"
+          cp -R "${APP_PATH}" "${DMG_STAGING_DIR}/Velora.app"
+          ln -s /Applications "${DMG_STAGING_DIR}/Applications"
+
+          hdiutil create \
+            -volname "Velora" \
+            -srcfolder "${DMG_STAGING_DIR}" \
+            -ov \
+            -format UDZO \
+            "${DMG_PATH}"
+
+          shasum -a 256 "${DMG_PATH}" > "${DMG_PATH}.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velora-macos-${{ matrix.name }}
+          path: |
+            release/*.dmg
+            release/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Velora ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
