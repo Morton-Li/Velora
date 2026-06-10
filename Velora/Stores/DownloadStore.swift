@@ -1,0 +1,309 @@
+import Foundation
+import Combine
+
+@MainActor
+final class DownloadStore: ObservableObject {
+    enum LoadState: Equatable {
+        case idle
+        case loading
+        case loaded
+        case failed(String)
+    }
+
+    @Published private(set) var items: [DownloadItem]
+    @Published private(set) var loadState: LoadState = .idle
+
+    private let service: DownloadService
+    private let processController: Aria2ProcessController?
+    private let refreshInterval: Duration
+    private var isSyncing = false
+    private var securityScopedDestinationURLs: [URL] = []
+
+    convenience init() {
+        if let runtime = try? Aria2Runtime() {
+            self.init(
+                service: Aria2DownloadService(endpointURL: runtime.endpointURL, secret: runtime.secret),
+                processController: Aria2ProcessController(runtime: runtime)
+            )
+        } else {
+            self.init(service: Aria2DownloadService())
+        }
+    }
+
+    init(
+        service: DownloadService,
+        processController: Aria2ProcessController? = nil,
+        refreshInterval: Duration = .milliseconds(800)  // RPC 刷新频率
+    ) {
+        self.service = service
+        self.processController = processController
+        self.refreshInterval = refreshInterval
+        self.items = []
+    }
+
+    var endpointStatus: EndpointStatus {
+        let reachability: EndpointStatus.Reachability
+        let message: String?
+
+        switch loadState {
+        case .idle:
+            reachability = .notChecked
+            message = nil
+        case .loading:
+            reachability = items.isEmpty ? .checking : .reachable
+            message = nil
+        case .loaded:
+            reachability = .reachable
+            message = nil
+        case .failed(let errorMessage):
+            reachability = .unreachable
+            message = errorMessage
+        }
+
+        return EndpointStatus(
+            endpointName: service.displayName,
+            endpointDescription: service.endpointDescription,
+            reachability: reachability,
+            message: message,
+            downloadSpeedBytesPerSecond: items.reduce(0) { $0 + $1.speedBytesPerSecond },
+            connections: items.reduce(0) { $0 + $1.connections }
+        )
+    }
+
+    func startSyncing() async {
+        guard !isSyncing else {
+            return
+        }
+
+        isSyncing = true
+        defer { isSyncing = false }
+
+        do {
+            try await startRuntimeIfNeeded()
+        } catch {
+            loadState = .failed(error.localizedDescription)
+            return
+        }
+
+        await refresh()
+
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: refreshInterval)
+                await refresh()
+            } catch {
+                break
+            }
+        }
+    }
+
+    func stopRuntime() {
+        processController?.stop()
+        stopAccessingSecurityScopedDestinationURLs()
+    }
+
+    func refresh() async {
+        loadState = .loading
+
+        do {
+            items = try await service.fetchDownloads()
+            loadState = .loaded
+        } catch {
+            loadState = .failed(error.localizedDescription)
+        }
+    }
+
+    func addDownload(from rawURL: String, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let url = try Self.downloadURL(from: rawURL)
+
+        do {
+            try await startRuntimeIfNeeded()
+            keepAccessToSecurityScopedDestination(destinationDirectory)
+            try Self.ensureDirectoryExists(destinationDirectory)
+            let id = try await service.addDownload(from: url, destinationDirectory: destinationDirectory)
+            await refresh()
+            return id
+        } catch {
+            loadState = .failed(error.localizedDescription)
+            throw error
+        }
+    }
+
+    func pauseDownload(_ item: DownloadItem) async throws {
+        try await performDownloadOperation {
+            try await service.pauseDownload(id: item.id)
+        }
+    }
+
+    func resumeDownload(_ item: DownloadItem) async throws {
+        try await performDownloadOperation {
+            try await service.resumeDownload(id: item.id)
+        }
+    }
+
+    func removeDownload(_ item: DownloadItem, deletingLocalFiles: Bool) async throws {
+        try await performDownloadOperation {
+            try await removeDownloadWithoutRefresh(item)
+            if deletingLocalFiles {
+                removeLocalFiles(for: item)
+            }
+        }
+    }
+
+    func restartDownload(_ item: DownloadItem) async throws -> DownloadItem.ID {
+        let url = try Self.downloadURL(from: item.source)
+
+        do {
+            try await startRuntimeIfNeeded()
+            try await removeDownloadWithoutRefresh(item)
+            removeLocalFiles(for: item)
+            let id = try await service.addDownload(from: url, destinationDirectory: item.destinationDirectoryURL)
+            await refresh()
+            return id
+        } catch {
+            loadState = .failed(error.localizedDescription)
+            throw error
+        }
+    }
+
+    func items(matching filter: DownloadFilter, searchText: String) -> [DownloadItem] {
+        let filtered = items.filter { filter.includes($0) }
+
+        guard !searchText.isEmpty else {
+            return filtered
+        }
+
+        return filtered.filter {
+            $0.fileName.localizedCaseInsensitiveContains(searchText) ||
+            $0.source.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    func item(id: DownloadItem.ID?, in items: [DownloadItem]) -> DownloadItem? {
+        guard let id else {
+            return nil
+        }
+
+        return items.first { $0.id == id }
+    }
+
+    private func startRuntimeIfNeeded() async throws {
+        try processController?.startIfNeeded()
+
+        if processController != nil {
+            try await Task.sleep(for: .milliseconds(300))
+            try processController?.ensureRunning()
+        }
+    }
+
+    private func performDownloadOperation(_ operation: () async throws -> Void) async throws {
+        do {
+            try await startRuntimeIfNeeded()
+            try await operation()
+            await refresh()
+        } catch {
+            loadState = .failed(error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func removeDownloadWithoutRefresh(_ item: DownloadItem) async throws {
+        switch item.status {
+        case .active, .paused:
+            try await service.removeDownload(id: item.id)
+            await clearDownloadResult(id: item.id)
+        case .completed, .stopped, .failed:
+            try await service.removeDownloadResult(id: item.id)
+        }
+    }
+
+    private func clearDownloadResult(id: DownloadItem.ID) async {
+        do {
+            try await service.removeDownloadResult(id: id)
+        } catch {
+            try? await Task.sleep(for: .milliseconds(150))
+            try? await service.removeDownloadResult(id: id)
+        }
+    }
+
+    private func removeLocalFiles(for item: DownloadItem) {
+        let fileManager = FileManager.default
+
+        item.localFilePaths
+            .flatMap { [$0, "\($0).aria2"] }
+            .map(URL.init(fileURLWithPath:))
+            .forEach { url in
+                var isDirectory: ObjCBool = false
+                guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                    return
+                }
+
+                try? fileManager.removeItem(at: url)
+            }
+    }
+
+    private static func downloadURL(from rawURL: String) throws -> URL {
+        let trimmedURL = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedURL.isEmpty else {
+            throw DownloadCreationError.emptyURL
+        }
+
+        guard let url = URL(string: trimmedURL), url.host != nil else {
+            throw DownloadCreationError.invalidURL
+        }
+
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+            throw DownloadCreationError.unsupportedScheme
+        }
+
+        return url
+    }
+
+    private static func ensureDirectoryExists(_ url: URL) throws {
+        var isDirectory: ObjCBool = false
+        let fileManager = FileManager.default
+
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+            return
+        }
+
+        guard isDirectory.boolValue else {
+            throw DownloadCreationError.invalidDestination
+        }
+    }
+
+    private func keepAccessToSecurityScopedDestination(_ url: URL) {
+        guard !securityScopedDestinationURLs.contains(url), url.startAccessingSecurityScopedResource() else {
+            return
+        }
+
+        securityScopedDestinationURLs.append(url)
+    }
+
+    private func stopAccessingSecurityScopedDestinationURLs() {
+        securityScopedDestinationURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+        securityScopedDestinationURLs.removeAll()
+    }
+}
+
+private enum DownloadCreationError: LocalizedError {
+    case emptyURL
+    case invalidURL
+    case unsupportedScheme
+    case invalidDestination
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyURL:
+            "Enter a download URL."
+        case .invalidURL:
+            "Enter a valid URL."
+        case .unsupportedScheme:
+            "Only HTTP and HTTPS links are supported."
+        case .invalidDestination:
+            "Choose a valid download folder."
+        }
+    }
+}
