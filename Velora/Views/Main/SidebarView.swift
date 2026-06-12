@@ -6,12 +6,14 @@ struct SidebarView: View {
     @Binding var selectedFilter: DownloadFilter
     let filterCounts: [DownloadFilter: Int]
     let endpointStatus: EndpointStatus
+    let availableUpdate: AvailableAppUpdate?
 
     var body: some View {
         SidebarContent(
             selectedFilter: $selectedFilter,
             filterCounts: filterCounts,
-            endpointStatus: endpointStatus
+            endpointStatus: endpointStatus,
+            availableUpdate: availableUpdate
         )
         .padding(.horizontal, 18)  // 水平内边距
         .padding(.vertical, 16)  // 垂直内边距
@@ -26,11 +28,12 @@ private struct SidebarContent: View {
     @Binding var selectedFilter: DownloadFilter
     let filterCounts: [DownloadFilter: Int]
     let endpointStatus: EndpointStatus
+    let availableUpdate: AvailableAppUpdate?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {  // 垂直布局，内容左对齐，元素间距为 18
             // 侧边栏顶部标题区域
-            SidebarHeader()
+            SidebarHeader(availableUpdate: availableUpdate)
 
             VStack(spacing: 4) {  // 筛选列表容器，每一行之间间距为 4。
                 ForEach(DownloadFilter.allCases) { filter in
@@ -60,6 +63,8 @@ private struct SidebarContent: View {
 
 // 侧边栏顶部标题组件
 private struct SidebarHeader: View {
+    let availableUpdate: AvailableAppUpdate?
+
     var body: some View {
         HStack(spacing: 10) {
             AppIconImage()
@@ -74,8 +79,52 @@ private struct SidebarHeader: View {
 
             Spacer(minLength: 0)
         }
+        .overlay(alignment: .topTrailing) {
+            if let availableUpdate {
+                NewVersionBadge(update: availableUpdate)
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            }
+        }
         .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)  // 标题区域横向填满，最小高度 52
         .padding(.top, 4)  // 顶部留 4 点间距
+        .animation(.smooth(duration: 0.2), value: availableUpdate)
+    }
+}
+
+private struct NewVersionBadge: View {
+    let update: AvailableAppUpdate
+    @State private var isHovering = false
+
+    var body: some View {
+        Link(destination: update.releaseURL) {
+            HStack(spacing: 4) {
+                Text("New")
+                    .font(.system(size: 10, weight: .bold))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 7)
+            .frame(height: 22)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.accentColor.opacity(isHovering ? 0.2 : 0.13))
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .stroke(Color.accentColor.opacity(isHovering ? 0.42 : 0.22), lineWidth: 1)
+            }
+            .shadow(color: Color.accentColor.opacity(isHovering ? 0.18 : 0), radius: 5, x: 0, y: 2)
+            .offset(y: isHovering ? -1 : 0)
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering in
+            self.isHovering = isHovering
+        }
+        .animation(.smooth(duration: 0.16), value: isHovering)
+        .help("Velora \(update.latestVersion) is available.")
+        .accessibilityLabel("Velora \(update.latestVersion) is available")
     }
 }
 
