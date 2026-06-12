@@ -6,12 +6,14 @@ struct SidebarView: View {
     @Binding var selectedFilter: DownloadFilter
     let filterCounts: [DownloadFilter: Int]
     let endpointStatus: EndpointStatus
+    let availableUpdate: AvailableAppUpdate?
 
     var body: some View {
         SidebarContent(
             selectedFilter: $selectedFilter,
             filterCounts: filterCounts,
-            endpointStatus: endpointStatus
+            endpointStatus: endpointStatus,
+            availableUpdate: availableUpdate
         )
         .padding(.horizontal, 18)  // 水平内边距
         .padding(.vertical, 16)  // 垂直内边距
@@ -26,11 +28,12 @@ private struct SidebarContent: View {
     @Binding var selectedFilter: DownloadFilter
     let filterCounts: [DownloadFilter: Int]
     let endpointStatus: EndpointStatus
+    let availableUpdate: AvailableAppUpdate?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {  // 垂直布局，内容左对齐，元素间距为 18
             // 侧边栏顶部标题区域
-            SidebarHeader()
+            SidebarHeader(availableUpdate: availableUpdate)
 
             VStack(spacing: 4) {  // 筛选列表容器，每一行之间间距为 4。
                 ForEach(DownloadFilter.allCases) { filter in
@@ -50,7 +53,7 @@ private struct SidebarContent: View {
 
             Spacer(minLength: 16)
 
-            // aria2 RPC 状态卡片，横向填满
+            // 底部运行状态卡片，横向填满
             EndpointStatusView(status: endpointStatus)
                 .frame(maxWidth: .infinity)
         }
@@ -60,10 +63,12 @@ private struct SidebarContent: View {
 
 // 侧边栏顶部标题组件
 private struct SidebarHeader: View {
+    let availableUpdate: AvailableAppUpdate?
+
     var body: some View {
         HStack(spacing: 10) {
             AppIconImage()
-            .frame(width: 32, height: 32)
+            .frame(width: 48, height: 48)
             .fixedSize()
 
             VStack(alignment: .leading, spacing: 1) {
@@ -74,8 +79,52 @@ private struct SidebarHeader: View {
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)  // 标题区域横向填满，最小高度 36
+        .overlay(alignment: .topTrailing) {
+            if let availableUpdate {
+                NewVersionBadge(update: availableUpdate)
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)  // 标题区域横向填满，最小高度 52
         .padding(.top, 4)  // 顶部留 4 点间距
+        .animation(.smooth(duration: 0.2), value: availableUpdate)
+    }
+}
+
+private struct NewVersionBadge: View {
+    let update: AvailableAppUpdate
+    @State private var isHovering = false
+
+    var body: some View {
+        Link(destination: update.releaseURL) {
+            HStack(spacing: 4) {
+                Text("New")
+                    .font(.system(size: 10, weight: .bold))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 7)
+            .frame(height: 22)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.accentColor.opacity(isHovering ? 0.2 : 0.13))
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .stroke(Color.accentColor.opacity(isHovering ? 0.42 : 0.22), lineWidth: 1)
+            }
+            .shadow(color: Color.accentColor.opacity(isHovering ? 0.18 : 0), radius: 5, x: 0, y: 2)
+            .offset(y: isHovering ? -1 : 0)
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering in
+            self.isHovering = isHovering
+        }
+        .animation(.smooth(duration: 0.16), value: isHovering)
+        .help("Velora \(update.latestVersion) is available.")
+        .accessibilityLabel("Velora \(update.latestVersion) is available")
     }
 }
 
@@ -145,7 +194,7 @@ private struct SidebarRow: View {
     }
 }
 
-// 底部端点状态卡片
+// 底部运行状态卡片
 private struct EndpointStatusView: View {
     let status: EndpointStatus
 
@@ -155,12 +204,12 @@ private struct EndpointStatusView: View {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 8, height: 8)
-                Text(status.endpointName)
+                Text("Status")
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Spacer()
-                Text(status.endpointDescription)
-                    .font(.caption2.monospacedDigit())
+                Text(statusSummary)
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(width: 86, alignment: .trailing)
@@ -189,23 +238,38 @@ private struct EndpointStatusView: View {
 
         switch status.reachability {
         case .notChecked:
-            return "Waiting to start aria2 RPC."
+            return "Waiting to start the download service."
         case .checking:
-            return "Starting aria2 and checking RPC."
+            return "Checking the download service."
         case .reachable:
             if status.downloadSpeedBytesPerSecond > 0 || status.connections > 0 {
-                return "RPC is reachable. Transfers are active."
+                return "Download service is running. Transfers are active."
             }
 
-            return "RPC is reachable. No active transfers."
+            return "Download service is running. No active transfers."
         case .unreachable:
-            return "Unable to reach aria2 RPC."
+            return "Download service is unavailable."
+        }
+    }
+
+    private var statusSummary: String {
+        switch status.reachability {
+        case .notChecked:
+            "Pending"
+        case .checking:
+            "Checking"
+        case .reachable:
+            "Running"
+        case .unreachable:
+            "Offline"
         }
     }
 
     private var statusColor: Color {
         switch status.reachability {
-        case .notChecked, .checking:
+        case .notChecked:
+            .secondary
+        case .checking:
             .orange
         case .reachable:
             .green

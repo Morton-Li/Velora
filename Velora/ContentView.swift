@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var downloadStore: DownloadStore
+    @StateObject private var appUpdateChecker: AppUpdateChecker
 
     @State private var isSidebarVisible = true  // 侧边栏是否显示
     @State private var isDetailVisible = false  // 详情面板是否显示
@@ -23,8 +24,9 @@ struct ContentView: View {
     private let detailMaxWidth: CGFloat = 360
 
     @MainActor
-    init(downloadStore: DownloadStore? = nil) {
+    init(downloadStore: DownloadStore? = nil, appUpdateChecker: AppUpdateChecker? = nil) {
         _downloadStore = StateObject(wrappedValue: downloadStore ?? DownloadStore())
+        _appUpdateChecker = StateObject(wrappedValue: appUpdateChecker ?? AppUpdateChecker())
     }
 
     // 计算属性：根据筛选条件和搜索文本返回要显示的下载列表
@@ -50,7 +52,8 @@ struct ContentView: View {
                 SidebarView(
                     selectedFilter: $selectedFilter,
                     filterCounts: filterCounts,
-                    endpointStatus: downloadStore.endpointStatus
+                    endpointStatus: downloadStore.endpointStatus,
+                    availableUpdate: appUpdateChecker.availableUpdate
                 )
                 .transition(.move(edge: .leading))  // 侧边栏出现或消失时，从左侧滑入或滑出
             }
@@ -101,6 +104,9 @@ struct ContentView: View {
         .task {
             await downloadStore.startSyncing()
         }
+        .task {
+            await appUpdateChecker.checkForUpdates()
+        }
         .onChange(of: downloadStore.items) { _, _ in
             normalizeSelection()
         }
@@ -145,8 +151,8 @@ struct ContentView: View {
         isDetailVisible = true
     }
 
-    private func addDownload(from urlString: String, to destinationDirectory: URL) async throws -> DownloadItem.ID {
-        let id = try await downloadStore.addDownload(from: urlString, destinationDirectory: destinationDirectory)
+    private func addDownload(from urlString: String, to destinationDirectory: URL, fileName: String?) async throws -> DownloadItem.ID {
+        let id = try await downloadStore.addDownload(from: urlString, destinationDirectory: destinationDirectory, fileName: fileName)
         selectedFilter = .all
         searchText = ""
         selectedDownloadID = id

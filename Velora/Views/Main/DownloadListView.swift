@@ -6,7 +6,7 @@ struct DownloadListView: View {
     let downloads: [DownloadItem]
     @Binding var selectedDownloadID: DownloadItem.ID?
     @Binding var searchText: String
-    let onAddDownload: (String, URL) async throws -> DownloadItem.ID
+    let onAddDownload: (String, URL, String?) async throws -> DownloadItem.ID
     let onPerformCommand: (DownloadCommand, DownloadItem) -> Void
     let onSelectDownload: (DownloadItem) -> Void
 
@@ -57,7 +57,7 @@ struct DownloadListView: View {
 private struct DownloadToolbar: View {
     @Binding var searchText: String
     let selectedDownload: DownloadItem?
-    let onAddDownload: (String, URL) async throws -> DownloadItem.ID
+    let onAddDownload: (String, URL, String?) async throws -> DownloadItem.ID
     let onPerformCommand: (DownloadCommand, DownloadItem) -> Void
     @State private var isAddingDownload = false
 
@@ -154,15 +154,22 @@ private struct AddDownloadSheet: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isURLFieldFocused: Bool
 
-    let onAddDownload: (String, URL) async throws -> DownloadItem.ID
+    let onAddDownload: (String, URL, String?) async throws -> DownloadItem.ID
 
     @State private var urlString = ""
+    @State private var fileName = ""
     @State private var destinationDirectoryURL = Self.defaultDestinationDirectoryURL
     @State private var errorMessage: String?
     @State private var isSubmitting = false
+    @State private var isResolvingFileName = false
+    @State private var isFileNameEdited = false
 
     private var trimmedURL: String {
         urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedFileName: String {
+        fileName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var destinationDisplayName: String {
@@ -214,6 +221,34 @@ private struct AddDownloadSheet: View {
                     .onSubmit {
                         submit()
                     }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("File Name")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if isResolvingFileName {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                TextField(
+                    "File.zip",
+                    text: Binding(
+                        get: { fileName },
+                        set: { newValue in
+                            fileName = newValue
+                            isFileNameEdited = true
+                        }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+                .disabled(isSubmitting)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -301,7 +336,7 @@ private struct AddDownloadSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(trimmedURL.isEmpty || isSubmitting)
+                .disabled(trimmedURL.isEmpty || trimmedFileName.isEmpty || isSubmitting)
             }
         }
         .padding(20)
@@ -309,6 +344,9 @@ private struct AddDownloadSheet: View {
         .onAppear {
             destinationDirectoryURL = Self.defaultDestinationDirectoryURL
             isURLFieldFocused = true
+        }
+        .task(id: trimmedURL) {
+            await resolveFileName(for: trimmedURL)
         }
     }
 
@@ -332,7 +370,7 @@ private struct AddDownloadSheet: View {
     }
 
     private func submit() {
-        guard !trimmedURL.isEmpty, !isSubmitting else {
+        guard !trimmedURL.isEmpty, !trimmedFileName.isEmpty, !isSubmitting else {
             return
         }
 
@@ -341,7 +379,7 @@ private struct AddDownloadSheet: View {
 
         Task {
             do {
-                _ = try await onAddDownload(trimmedURL, destinationDirectoryURL)
+                _ = try await onAddDownload(trimmedURL, destinationDirectoryURL, trimmedFileName)
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
@@ -349,6 +387,39 @@ private struct AddDownloadSheet: View {
 
             isSubmitting = false
         }
+    }
+
+    private func resolveFileName(for rawURL: String) async {
+        let urlForResolution = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !urlForResolution.isEmpty else {
+            isResolvingFileName = false
+            isFileNameEdited = false
+            fileName = ""
+            return
+        }
+
+        isFileNameEdited = false
+        isResolvingFileName = true
+
+        do {
+            try await Task.sleep(for: .milliseconds(450))
+        } catch {
+            isResolvingFileName = false
+            return
+        }
+
+        let suggestedFileName = await DownloadFileNameResolver.suggestedFileName(from: urlForResolution)
+
+        guard !Task.isCancelled, urlForResolution == trimmedURL else {
+            return
+        }
+
+        if !isFileNameEdited {
+            fileName = suggestedFileName ?? ""
+        }
+
+        isResolvingFileName = false
     }
 
     private static var defaultDestinationDirectoryURL: URL {
