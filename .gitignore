@@ -8,3 +8,6 @@ xcuserdata/
 
 # macOS metadata
 .DS_Store
+
+# Build products
+build/

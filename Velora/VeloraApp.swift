@@ -36,10 +36,11 @@ private final class VeloraAppDelegate: NSObject, NSApplicationDelegate {
 struct VeloraApp: App {
     @NSApplicationDelegateAdaptor(VeloraAppDelegate.self) private var appDelegate
     @StateObject private var downloadStore = DownloadStore()
+    @StateObject private var appUpdateChecker = AppUpdateChecker()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(downloadStore: downloadStore)
+            ContentView(downloadStore: downloadStore, appUpdateChecker: appUpdateChecker)
                 .onAppear {
                     appDelegate.stopRuntime = {
                         downloadStore.stopRuntime()
