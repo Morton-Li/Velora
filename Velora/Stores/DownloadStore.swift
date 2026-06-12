@@ -33,7 +33,7 @@ final class DownloadStore: ObservableObject {
     init(
         service: DownloadService,
         processController: Aria2ProcessController? = nil,
-        refreshInterval: Duration = .milliseconds(800)  // RPC 刷新频率
+        refreshInterval: Duration = .milliseconds(800)  // 状态刷新频率
     ) {
         self.service = service
         self.processController = processController
@@ -103,7 +103,9 @@ final class DownloadStore: ObservableObject {
     }
 
     func refresh() async {
-        loadState = .loading
+        if loadState == .idle {
+            loadState = .loading
+        }
 
         do {
             items = try await service.fetchDownloads()
@@ -113,14 +115,15 @@ final class DownloadStore: ObservableObject {
         }
     }
 
-    func addDownload(from rawURL: String, destinationDirectory: URL) async throws -> DownloadItem.ID {
+    func addDownload(from rawURL: String, destinationDirectory: URL, fileName rawFileName: String?) async throws -> DownloadItem.ID {
         let url = try Self.downloadURL(from: rawURL)
+        let fileName = try Self.downloadFileName(from: rawFileName)
 
         do {
             try await startRuntimeIfNeeded()
             keepAccessToSecurityScopedDestination(destinationDirectory)
             try Self.ensureDirectoryExists(destinationDirectory)
-            let id = try await service.addDownload(from: url, destinationDirectory: destinationDirectory)
+            let id = try await service.addDownload(from: url, destinationDirectory: destinationDirectory, fileName: fileName)
             await refresh()
             return id
         } catch {
@@ -157,7 +160,7 @@ final class DownloadStore: ObservableObject {
             try await startRuntimeIfNeeded()
             try await removeDownloadWithoutRefresh(item)
             removeLocalFiles(for: item)
-            let id = try await service.addDownload(from: url, destinationDirectory: item.destinationDirectoryURL)
+            let id = try await service.addDownload(from: url, destinationDirectory: item.destinationDirectoryURL, fileName: item.fileName)
             await refresh()
             return id
         } catch {
@@ -274,6 +277,18 @@ final class DownloadStore: ObservableObject {
         }
     }
 
+    private static func downloadFileName(from rawFileName: String?) throws -> String? {
+        guard let rawFileName else {
+            return nil
+        }
+
+        guard let fileName = DownloadFileNameResolver.sanitizedFileName(rawFileName) else {
+            throw DownloadCreationError.invalidFileName
+        }
+
+        return fileName
+    }
+
     private func keepAccessToSecurityScopedDestination(_ url: URL) {
         guard !securityScopedDestinationURLs.contains(url), url.startAccessingSecurityScopedResource() else {
             return
@@ -293,6 +308,7 @@ private enum DownloadCreationError: LocalizedError {
     case invalidURL
     case unsupportedScheme
     case invalidDestination
+    case invalidFileName
 
     var errorDescription: String? {
         switch self {
@@ -304,6 +320,8 @@ private enum DownloadCreationError: LocalizedError {
             "Only HTTP and HTTPS links are supported."
         case .invalidDestination:
             "Choose a valid download folder."
+        case .invalidFileName:
+            "Enter a valid file name."
         }
     }
 }

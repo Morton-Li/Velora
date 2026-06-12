@@ -50,7 +50,7 @@ private struct SidebarContent: View {
 
             Spacer(minLength: 16)
 
-            // aria2 RPC 状态卡片，横向填满
+            // 底部运行状态卡片，横向填满
             EndpointStatusView(status: endpointStatus)
                 .frame(maxWidth: .infinity)
         }
@@ -63,7 +63,7 @@ private struct SidebarHeader: View {
     var body: some View {
         HStack(spacing: 10) {
             AppIconImage()
-            .frame(width: 32, height: 32)
+            .frame(width: 48, height: 48)
             .fixedSize()
 
             VStack(alignment: .leading, spacing: 1) {
@@ -74,7 +74,7 @@ private struct SidebarHeader: View {
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)  // 标题区域横向填满，最小高度 36
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)  // 标题区域横向填满，最小高度 52
         .padding(.top, 4)  // 顶部留 4 点间距
     }
 }
@@ -145,7 +145,7 @@ private struct SidebarRow: View {
     }
 }
 
-// 底部端点状态卡片
+// 底部运行状态卡片
 private struct EndpointStatusView: View {
     let status: EndpointStatus
 
@@ -155,12 +155,12 @@ private struct EndpointStatusView: View {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 8, height: 8)
-                Text(status.endpointName)
+                Text("Status")
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Spacer()
-                Text(status.endpointDescription)
-                    .font(.caption2.monospacedDigit())
+                Text(statusSummary)
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(width: 86, alignment: .trailing)
@@ -189,23 +189,38 @@ private struct EndpointStatusView: View {
 
         switch status.reachability {
         case .notChecked:
-            return "Waiting to start aria2 RPC."
+            return "Waiting to start the download service."
         case .checking:
-            return "Starting aria2 and checking RPC."
+            return "Checking the download service."
         case .reachable:
             if status.downloadSpeedBytesPerSecond > 0 || status.connections > 0 {
-                return "RPC is reachable. Transfers are active."
+                return "Download service is running. Transfers are active."
             }
 
-            return "RPC is reachable. No active transfers."
+            return "Download service is running. No active transfers."
         case .unreachable:
-            return "Unable to reach aria2 RPC."
+            return "Download service is unavailable."
+        }
+    }
+
+    private var statusSummary: String {
+        switch status.reachability {
+        case .notChecked:
+            "Pending"
+        case .checking:
+            "Checking"
+        case .reachable:
+            "Running"
+        case .unreachable:
+            "Offline"
         }
     }
 
     private var statusColor: Color {
         switch status.reachability {
-        case .notChecked, .checking:
+        case .notChecked:
+            .secondary
+        case .checking:
             .orange
         case .reachable:
             .green

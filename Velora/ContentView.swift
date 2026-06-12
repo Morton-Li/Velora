@@ -145,8 +145,8 @@ struct ContentView: View {
         isDetailVisible = true
     }
 
-    private func addDownload(from urlString: String, to destinationDirectory: URL) async throws -> DownloadItem.ID {
-        let id = try await downloadStore.addDownload(from: urlString, destinationDirectory: destinationDirectory)
+    private func addDownload(from urlString: String, to destinationDirectory: URL, fileName: String?) async throws -> DownloadItem.ID {
+        let id = try await downloadStore.addDownload(from: urlString, destinationDirectory: destinationDirectory, fileName: fileName)
         selectedFilter = .all
         searchText = ""
         selectedDownloadID = id

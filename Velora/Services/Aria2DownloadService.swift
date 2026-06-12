@@ -46,12 +46,18 @@ final class Aria2DownloadService: DownloadService {
         return try await (active + waiting + stopped).map(\.downloadItem)
     }
 
-    func addDownload(from url: URL, destinationDirectory: URL) async throws -> DownloadItem.ID {
-        try await call(
+    func addDownload(from url: URL, destinationDirectory: URL, fileName: String?) async throws -> DownloadItem.ID {
+        var options = ["dir": destinationDirectory.path]
+
+        if let fileName, !fileName.isEmpty {
+            options["out"] = fileName
+        }
+
+        return try await call(
             method: "aria2.addUri",
             params: [
                 [url.absoluteString],
-                ["dir": destinationDirectory.path]
+                options
             ]
         )
     }
