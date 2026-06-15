@@ -82,7 +82,7 @@ struct DownloadFileNameResolver {
         guard let url = URL(string: trimmedURL),
               url.host != nil,
               let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme) else {
+              ["http", "https", "ftp"].contains(scheme) else {
             return nil
         }
 

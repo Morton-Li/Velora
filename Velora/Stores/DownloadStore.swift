@@ -102,6 +102,16 @@ final class DownloadStore: ObservableObject {
         stopAccessingSecurityScopedDestinationURLs()
     }
 
+    func restartRuntime() async throws {
+        guard processController != nil else {
+            return
+        }
+
+        processController?.stop()
+        try await startRuntimeIfNeeded()
+        await refresh()
+    }
+
     func refresh() async {
         if loadState == .idle {
             loadState = .loading
@@ -132,6 +142,22 @@ final class DownloadStore: ObservableObject {
         }
     }
 
+    func addMagnetDownload(from rawMagnetURI: String, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let magnetURI = try Self.magnetURI(from: rawMagnetURI)
+
+        do {
+            try await startRuntimeIfNeeded()
+            keepAccessToSecurityScopedDestination(destinationDirectory)
+            try Self.ensureDirectoryExists(destinationDirectory)
+            let id = try await service.addMagnetDownload(from: magnetURI, destinationDirectory: destinationDirectory)
+            await refresh()
+            return id
+        } catch {
+            loadState = .failed(error.localizedDescription)
+            throw error
+        }
+    }
+
     func pauseDownload(_ item: DownloadItem) async throws {
         try await performDownloadOperation {
             try await service.pauseDownload(id: item.id)
@@ -154,13 +180,19 @@ final class DownloadStore: ObservableObject {
     }
 
     func restartDownload(_ item: DownloadItem) async throws -> DownloadItem.ID {
-        let url = try Self.downloadURL(from: item.source)
-
         do {
             try await startRuntimeIfNeeded()
             try await removeDownloadWithoutRefresh(item)
             removeLocalFiles(for: item)
-            let id = try await service.addDownload(from: url, destinationDirectory: item.destinationDirectoryURL, fileName: item.fileName)
+            let id: DownloadItem.ID
+
+            if let magnetURI = try? Self.magnetURI(from: item.source) {
+                id = try await service.addMagnetDownload(from: magnetURI, destinationDirectory: item.destinationDirectoryURL)
+            } else {
+                let url = try Self.downloadURL(from: item.source)
+                id = try await service.addDownload(from: url, destinationDirectory: item.destinationDirectoryURL, fileName: item.fileName)
+            }
+
             await refresh()
             return id
         } catch {
@@ -256,11 +288,15 @@ final class DownloadStore: ObservableObject {
             throw DownloadCreationError.invalidURL
         }
 
-        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https", "ftp"].contains(scheme) else {
             throw DownloadCreationError.unsupportedScheme
         }
 
         return url
+    }
+
+    private static func magnetURI(from rawMagnetURI: String) throws -> String {
+        try MagnetLink.parse(rawMagnetURI).normalizedURI
     }
 
     private static func ensureDirectoryExists(_ url: URL) throws {
@@ -303,9 +339,102 @@ final class DownloadStore: ObservableObject {
     }
 }
 
+struct MagnetLink: Equatable {
+    let normalizedURI: String
+    let displayName: String?
+    let exactTopic: String
+    let infoHash: String?
+    let trackers: [String]
+
+    nonisolated static func parse(_ rawMagnetURI: String) throws -> MagnetLink {
+        let normalizedURI = rawMagnetURI.components(separatedBy: .whitespacesAndNewlines).joined()
+
+        guard !normalizedURI.isEmpty else {
+            throw DownloadCreationError.emptyMagnetURI
+        }
+
+        let lowercasedURI = normalizedURI.lowercased()
+        guard lowercasedURI.hasPrefix("magnet:?") else {
+            throw DownloadCreationError.invalidMagnetURI
+        }
+
+        let queryStart = normalizedURI.index(normalizedURI.startIndex, offsetBy: "magnet:?".count)
+        let parameters = parameters(from: normalizedURI[queryStart...])
+        let exactTopics = parameters.values(named: "xt")
+
+        guard let exactTopic = exactTopics.first(where: isSupportedExactTopic) else {
+            throw DownloadCreationError.invalidMagnetURI
+        }
+
+        return MagnetLink(
+            normalizedURI: normalizedURI,
+            displayName: parameters.values(named: "dn").first?.nilIfEmpty,
+            exactTopic: exactTopic,
+            infoHash: infoHash(from: exactTopic),
+            trackers: parameters.values(named: "tr").filter { !$0.isEmpty }
+        )
+    }
+
+    private nonisolated static func parameters(from query: Substring) -> [MagnetLinkParameter] {
+        query.split(separator: "&", omittingEmptySubsequences: true).compactMap { parameter in
+            let parts = parameter.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else {
+                return nil
+            }
+
+            return MagnetLinkParameter(
+                name: decodedQueryValue(String(parts[0])),
+                value: decodedQueryValue(String(parts[1]))
+            )
+        }
+    }
+
+    private nonisolated static func isSupportedExactTopic(_ exactTopic: String) -> Bool {
+        let lowercasedTopic = exactTopic.lowercased()
+        return lowercasedTopic.hasPrefix("urn:btih:") || lowercasedTopic.hasPrefix("urn:btmh:")
+    }
+
+    private nonisolated static func infoHash(from exactTopic: String) -> String? {
+        let lowercasedTopic = exactTopic.lowercased()
+
+        if lowercasedTopic.hasPrefix("urn:btih:") {
+            return String(exactTopic.dropFirst("urn:btih:".count)).nilIfEmpty
+        }
+
+        if lowercasedTopic.hasPrefix("urn:btmh:") {
+            return String(exactTopic.dropFirst("urn:btmh:".count)).nilIfEmpty
+        }
+
+        return nil
+    }
+
+    private nonisolated static func decodedQueryValue(_ value: String) -> String {
+        value.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? value
+    }
+}
+
+private struct MagnetLinkParameter: Equatable {
+    let name: String
+    let value: String
+}
+
+private extension [MagnetLinkParameter] {
+    nonisolated func values(named name: String) -> [String] {
+        filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }.map(\.value)
+    }
+}
+
+private extension String {
+    nonisolated var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
+}
+
 private enum DownloadCreationError: LocalizedError {
     case emptyURL
+    case emptyMagnetURI
     case invalidURL
+    case invalidMagnetURI
     case unsupportedScheme
     case invalidDestination
     case invalidFileName
@@ -314,10 +443,14 @@ private enum DownloadCreationError: LocalizedError {
         switch self {
         case .emptyURL:
             "Enter a download URL."
+        case .emptyMagnetURI:
+            "Enter a magnet link."
         case .invalidURL:
             "Enter a valid URL."
+        case .invalidMagnetURI:
+            "Enter a valid magnet link."
         case .unsupportedScheme:
-            "Only HTTP and HTTPS links are supported."
+            "Only HTTP, HTTPS, and FTP links are supported."
         case .invalidDestination:
             "Choose a valid download folder."
         case .invalidFileName:

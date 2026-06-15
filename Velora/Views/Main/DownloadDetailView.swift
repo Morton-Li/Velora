@@ -4,6 +4,7 @@ struct DownloadDetailView: View {
     let download: DownloadItem?
     var onPerformCommand: (DownloadCommand, DownloadItem) -> Void = { _, _ in }
     var onClose: () -> Void = {}
+    var isPausePending = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -11,7 +12,8 @@ struct DownloadDetailView: View {
                 DetailHeader(
                     download: download,
                     onPerformCommand: onPerformCommand,
-                    onClose: onClose
+                    onClose: onClose,
+                    isPausePending: isPausePending
                 )
 
                 Divider()
@@ -52,13 +54,26 @@ private struct DetailHeader: View {
     let download: DownloadItem
     let onPerformCommand: (DownloadCommand, DownloadItem) -> Void
     let onClose: () -> Void
+    let isPausePending: Bool
+
+    private var showsProcessingIcon: Bool {
+        isPausePending || download.isMetadataPlaceholder
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: download.status.symbolName)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(download.status.tint)
+                Group {
+                    if showsProcessingIcon {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(download.status.tint)
+                    } else {
+                        Image(systemName: download.status.symbolName)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(download.status.tint)
+                    }
+                }
                     .frame(width: 36, height: 36)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -69,7 +84,7 @@ private struct DetailHeader: View {
                     Text(download.fileName)
                         .font(.system(size: 16, weight: .semibold))
                         .lineLimit(2)
-                    Text(download.status.title)
+                    Text(showsProcessingIcon ? processingTitle : download.status.title)
                         .font(.caption)
                         .foregroundStyle(download.status.tint)
                 }
@@ -80,7 +95,7 @@ private struct DetailHeader: View {
             }
 
             HStack(spacing: 8) {
-                ForEach(DetailControl.controls(for: download.status)) { control in
+                ForEach(DetailControl.controls(for: download)) { control in
                     IconButton(
                         systemName: control.systemName,
                         help: control.help,
@@ -95,6 +110,14 @@ private struct DetailHeader: View {
         .padding(16)
         .background(.bar)
     }
+
+    private var processingTitle: String {
+        if download.isMetadataPlaceholder {
+            return "Fetching metadata"
+        }
+
+        return "Pausing"
+    }
 }
 
 private struct DetailControl: Identifiable {
@@ -104,16 +127,16 @@ private struct DetailControl: Identifiable {
     let help: String
     var role: ButtonRole?
 
-    static func controls(for status: DownloadStatus) -> [DetailControl] {
-        switch status {
+    static func controls(for download: DownloadItem) -> [DetailControl] {
+        switch download.status {
         case .completed:
-            [restart, delete]
+            download.isRestartable ? [restart, delete] : [delete]
         case .stopped, .failed:
-            [restart, delete]
+            download.isRestartable ? [restart, delete] : [delete]
         case .active:
             [pause, delete]
         case .paused:
-            [resume, restart, delete]
+            download.isRestartable ? [resume, restart, delete] : [resume, delete]
         }
     }
 
