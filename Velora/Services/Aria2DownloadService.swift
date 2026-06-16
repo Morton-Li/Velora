@@ -8,6 +8,11 @@ final class Aria2DownloadService: DownloadService {
         "completedLength",
         "downloadSpeed",
         "connections",
+        "infoHash",
+        "followedBy",
+        "following",
+        "belongsTo",
+        "bittorrent",
         "dir",
         "files"
     ]
@@ -43,7 +48,26 @@ final class Aria2DownloadService: DownloadService {
         async let waiting: [Aria2Status] = call(method: "aria2.tellWaiting", params: [0, 100, Self.taskKeys])
         async let stopped: [Aria2Status] = call(method: "aria2.tellStopped", params: [0, 100, Self.taskKeys])
 
-        return try await (active + waiting + stopped).map(\.downloadItem)
+        let statuses = try await (active + waiting + stopped)
+        let realDownloadInfoHashes = Set(
+            statuses.compactMap { status in
+                status.isMetadataDownload ? nil : status.normalizedInfoHash
+            }
+        )
+        let realDownloadParentIDs = Set(
+            statuses
+                .filter { !$0.isMetadataDownload }
+                .flatMap { [$0.following, $0.belongsTo].compactMap { $0 } }
+        )
+
+        return statuses
+            .filter {
+                !$0.shouldHideMetadataDownload(
+                    realDownloadInfoHashes: realDownloadInfoHashes,
+                    realDownloadParentIDs: realDownloadParentIDs
+                )
+            }
+            .map(\.downloadItem)
     }
 
     func addDownload(from url: URL, destinationDirectory: URL, fileName: String?) async throws -> DownloadItem.ID {
@@ -62,8 +86,39 @@ final class Aria2DownloadService: DownloadService {
         )
     }
 
+    func addMagnetDownload(from magnetURI: String, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        var options = ["dir": destinationDirectory.path]
+
+        if let magnetLink = try? MagnetLink.parse(magnetURI), !magnetLink.trackers.isEmpty {
+            options["bt-tracker"] = magnetLink.trackers.joined(separator: ",")
+        }
+
+        return try await call(
+            method: "aria2.addUri",
+            params: [
+                [magnetURI],
+                options
+            ]
+        )
+    }
+
+    func addTorrentDownload(torrentData: Data, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        try await call(
+            method: "aria2.addTorrent",
+            params: [
+                torrentData.base64EncodedString(),
+                [],
+                ["dir": destinationDirectory.path]
+            ]
+        )
+    }
+
     func pauseDownload(id: DownloadItem.ID) async throws {
-        let _: String = try await call(method: "aria2.pause", params: [id])
+        do {
+            let _: String = try await call(method: "aria2.pause", params: [id])
+        } catch {
+            let _: String = try await call(method: "aria2.forcePause", params: [id])
+        }
     }
 
     func resumeDownload(id: DownloadItem.ID) async throws {
@@ -153,6 +208,11 @@ private struct Aria2Status: Decodable {
     let completedLength: String
     let downloadSpeed: String
     let connections: String?
+    let infoHash: String?
+    let followedBy: [String]?
+    let following: String?
+    let belongsTo: String?
+    let bittorrent: Aria2Bittorrent?
     let dir: String?
     let files: [Aria2File]?
 
@@ -175,11 +235,17 @@ private struct Aria2Status: Decodable {
             speedBytesPerSecond: speedBytesPerSecond,
             remainingSeconds: remainingSeconds,
             connections: connections?.intValue ?? 0,
-            localFilePaths: localFilePaths
+            localFilePaths: localFilePaths,
+            isMetadataPlaceholder: isMetadataDownload,
+            sourceKind: sourceKind
         )
     }
 
     private var fileName: String {
+        if isMetadataDownload, let displayName = metadataDisplayName {
+            return displayName
+        }
+
         if let path = primaryFile?.path, !path.isEmpty {
             return URL(fileURLWithPath: path).lastPathComponent
         }
@@ -207,6 +273,80 @@ private struct Aria2Status: Decodable {
 
     private var primaryFile: Aria2File? {
         files?.first
+    }
+
+    private var sourceKind: DownloadSourceKind {
+        let normalizedSource = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if normalizedSource.hasPrefix("magnet:?") {
+            return .magnet
+        }
+
+        if bittorrent != nil {
+            return .bittorrent
+        }
+
+        guard let url = URL(string: source),
+              url.host != nil,
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "ftp"].contains(scheme) else {
+            return .unknown
+        }
+
+        return .file
+    }
+
+    var normalizedInfoHash: String? {
+        infoHash?.lowercased()
+            ?? metadataInfoHash?.lowercased()
+    }
+
+    var isMetadataDownload: Bool {
+        guard let path = primaryFile?.path else {
+            return false
+        }
+
+        return path.contains("[METADATA]")
+    }
+
+    func shouldHideMetadataDownload(realDownloadInfoHashes: Set<String>, realDownloadParentIDs: Set<String>) -> Bool {
+        guard isMetadataDownload else {
+            return false
+        }
+
+        if let followedBy, !followedBy.isEmpty {
+            return true
+        }
+
+        if realDownloadParentIDs.contains(gid) {
+            return true
+        }
+
+        if let normalizedInfoHash, realDownloadInfoHashes.contains(normalizedInfoHash) {
+            return true
+        }
+
+        return false
+    }
+
+    private var metadataDisplayName: String? {
+        guard metadataInfoHash != nil else {
+            return nil
+        }
+
+        return "Fetching metadata ..."
+    }
+
+    private var metadataInfoHash: String? {
+        guard let path = primaryFile?.path,
+              let metadataRange = path.range(of: "[METADATA]") else {
+            return nil
+        }
+
+        let infoHash = path[metadataRange.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return infoHash.isEmpty ? nil : infoHash
     }
 
     private var downloadStatus: DownloadStatus {
@@ -237,6 +377,8 @@ private struct Aria2File: Decodable {
     let path: String?
     let uris: [Aria2URI]?
 }
+
+private struct Aria2Bittorrent: Decodable {}
 
 private struct Aria2URI: Decodable {
     let uri: String

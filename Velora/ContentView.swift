@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var searchText = ""  // 搜索框文本
     @State private var pendingRemoval: DownloadItem?
     @State private var shouldDeleteCompletedLocalFiles = false
+    @State private var pendingPauseDownloadIDs: Set<DownloadItem.ID> = []
 
     // 详情面板的最小宽度和最大宽度（避免过度展开或挤压）
     private let detailMinWidth: CGFloat = 300
@@ -67,8 +68,12 @@ struct ContentView: View {
                         selectedDownloadID: $selectedDownloadID,
                         searchText: $searchText,
                         onAddDownload: addDownload,
+                        onAddMagnetDownload: addMagnetDownload,
+                        onAddTorrentFileDownload: addTorrentFileDownload,
+                        onAddTorrentURLDownload: addTorrentURLDownload,
                         onPerformCommand: performDownloadCommand,
-                        onSelectDownload: toggleDetail
+                        onSelectDownload: toggleDetail,
+                        pendingPauseDownloadIDs: pendingPauseDownloadIDs
                     )
                     .frame(width: isDetailVisible ? max(proxy.size.width - detailWidth, .zero) : proxy.size.width)
 
@@ -77,7 +82,8 @@ struct ContentView: View {
                         DownloadDetailView(
                             download: selectedDownload,
                             onPerformCommand: performDownloadCommand,
-                            onClose: closeDetail
+                            onClose: closeDetail,
+                            isPausePending: selectedDownload.map { pendingPauseDownloadIDs.contains($0.id) } ?? false
                         )
                         .frame(width: detailWidth)
                         .transition(.move(edge: .trailing))
@@ -109,6 +115,7 @@ struct ContentView: View {
         }
         .onChange(of: downloadStore.items) { _, _ in
             normalizeSelection()
+            clearResolvedPauseRequests()
         }
         .onChange(of: selectedFilter) { _, _ in
             normalizeSelection()
@@ -160,18 +167,49 @@ struct ContentView: View {
         return id
     }
 
+    private func addMagnetDownload(from magnetURI: String, to destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let id = try await downloadStore.addMagnetDownload(from: magnetURI, destinationDirectory: destinationDirectory)
+        selectedFilter = .all
+        searchText = ""
+        selectedDownloadID = id
+        isDetailVisible = true
+        return id
+    }
+
+    private func addTorrentFileDownload(from fileURL: URL, to destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let id = try await downloadStore.addTorrentDownload(fromFile: fileURL, destinationDirectory: destinationDirectory)
+        selectedFilter = .all
+        searchText = ""
+        selectedDownloadID = id
+        isDetailVisible = true
+        return id
+    }
+
+    private func addTorrentURLDownload(from urlString: String, to destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let id = try await downloadStore.addTorrentDownload(fromRemoteURL: urlString, destinationDirectory: destinationDirectory)
+        selectedFilter = .all
+        searchText = ""
+        selectedDownloadID = id
+        isDetailVisible = true
+        return id
+    }
+
     private func performDownloadCommand(_ command: DownloadCommand, on download: DownloadItem) {
         Task {
             do {
                 switch command {
                 case .pause:
+                    pendingPauseDownloadIDs.insert(download.id)
                     try await downloadStore.pauseDownload(download)
                 case .resume:
+                    pendingPauseDownloadIDs.remove(download.id)
                     try await downloadStore.resumeDownload(download)
                 case .remove:
+                    pendingPauseDownloadIDs.remove(download.id)
                     pendingRemoval = download
                     shouldDeleteCompletedLocalFiles = false
                 case .restart:
+                    pendingPauseDownloadIDs.remove(download.id)
                     let id = try await downloadStore.restartDownload(download)
                     selectedFilter = .all
                     searchText = ""
@@ -179,9 +217,17 @@ struct ContentView: View {
                     isDetailVisible = true
                 }
             } catch {
+                if command == .pause {
+                    pendingPauseDownloadIDs.remove(download.id)
+                }
                 // The store already exposes operation failures through endpointStatus.
             }
         }
+    }
+
+    private func clearResolvedPauseRequests() {
+        let activeIDs = Set(downloadStore.items.filter { $0.status == .active }.map(\.id))
+        pendingPauseDownloadIDs.formIntersection(activeIDs)
     }
 
     private func cancelRemoveDownload() {

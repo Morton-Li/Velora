@@ -14,6 +14,8 @@ struct DownloadItem: Identifiable, Hashable {
     let remainingSeconds: TimeInterval?
     let connections: Int
     let localFilePaths: [String]
+    let isMetadataPlaceholder: Bool
+    let sourceKind: DownloadSourceKind
 
     var remainingBytes: Int64 {
         max(totalBytes - downloadedBytes, 0)
@@ -26,6 +28,28 @@ struct DownloadItem: Identifiable, Hashable {
 
         return URL(fileURLWithPath: destination)
     }
+
+    var isRestartable: Bool {
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedSource.isEmpty, !isMetadataPlaceholder else {
+            return false
+        }
+
+        switch sourceKind {
+        case .file, .magnet:
+            return true
+        case .bittorrent, .unknown:
+            return false
+        }
+    }
+}
+
+enum DownloadSourceKind: String, Hashable {
+    case file
+    case magnet
+    case bittorrent
+    case unknown
 }
 
 enum DownloadStatus: String, CaseIterable {

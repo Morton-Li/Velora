@@ -6,6 +6,8 @@ protocol DownloadService {
 
     func fetchDownloads() async throws -> [DownloadItem]
     func addDownload(from url: URL, destinationDirectory: URL, fileName: String?) async throws -> DownloadItem.ID
+    func addMagnetDownload(from magnetURI: String, destinationDirectory: URL) async throws -> DownloadItem.ID
+    func addTorrentDownload(torrentData: Data, destinationDirectory: URL) async throws -> DownloadItem.ID
     func pauseDownload(id: DownloadItem.ID) async throws
     func resumeDownload(id: DownloadItem.ID) async throws
     func removeDownload(id: DownloadItem.ID) async throws

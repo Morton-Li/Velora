@@ -27,10 +27,18 @@ final class Aria2ProcessController {
             "--save-session=\(runtime.sessionFileURL.path)",
             "--save-session-interval=30",
             "--continue=true",
+            "--enable-dht=true",
+            "--enable-peer-exchange=true",
+            "--dht-file-path=\(runtime.dhtFileURL.path)",
             "--stop-with-process=\(ProcessInfo.processInfo.processIdentifier)",
             "--log=\(runtime.logFileURL.path)",
             "--log-level=notice"
         ]
+
+        let dhtEntryPoint = AppConfigurationPersistence.dhtEntryPoint()
+        if dhtEntryPoint.isValid {
+            arguments.append("--dht-entry-point=\(dhtEntryPoint.endpoint)")
+        }
 
         if let caCertificateURL = runtime.caCertificateURL {
             arguments.append("--ca-certificate=\(caCertificateURL.path)")

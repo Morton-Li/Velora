@@ -139,15 +139,12 @@ jobs:
             -format UDZO \
             "${DMG_PATH}"
 
-          shasum -a 256 "${DMG_PATH}" > "${DMG_PATH}.sha256"
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Velora-macos-${{ matrix.name }}
           path: |
             release/*.dmg
-            release/*.sha256
           if-no-files-found: error
 
   publish:

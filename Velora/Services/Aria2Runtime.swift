@@ -7,6 +7,7 @@ struct Aria2Runtime {
     let workingDirectoryURL: URL
     let downloadsDirectoryURL: URL
     let sessionFileURL: URL
+    let dhtFileURL: URL
     let logFileURL: URL
     let caCertificateURL: URL?
 
@@ -36,6 +37,7 @@ struct Aria2Runtime {
             create: true
         )
         let sessionFileURL = workingDirectoryURL.appendingPathComponent("aria2.session")
+        let dhtFileURL = workingDirectoryURL.appendingPathComponent("dht.dat")
         let logFileURL = workingDirectoryURL.appendingPathComponent("aria2.log")
 
         try fileManager.createDirectory(at: workingDirectoryURL, withIntermediateDirectories: true)
@@ -51,6 +53,7 @@ struct Aria2Runtime {
         self.workingDirectoryURL = workingDirectoryURL
         self.downloadsDirectoryURL = downloadsDirectoryURL
         self.sessionFileURL = sessionFileURL
+        self.dhtFileURL = dhtFileURL
         self.logFileURL = logFileURL
         self.caCertificateURL = Self.caCertificateURL(fileManager: fileManager)
     }
