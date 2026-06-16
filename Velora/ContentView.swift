@@ -69,6 +69,8 @@ struct ContentView: View {
                         searchText: $searchText,
                         onAddDownload: addDownload,
                         onAddMagnetDownload: addMagnetDownload,
+                        onAddTorrentFileDownload: addTorrentFileDownload,
+                        onAddTorrentURLDownload: addTorrentURLDownload,
                         onPerformCommand: performDownloadCommand,
                         onSelectDownload: toggleDetail,
                         pendingPauseDownloadIDs: pendingPauseDownloadIDs
@@ -167,6 +169,24 @@ struct ContentView: View {
 
     private func addMagnetDownload(from magnetURI: String, to destinationDirectory: URL) async throws -> DownloadItem.ID {
         let id = try await downloadStore.addMagnetDownload(from: magnetURI, destinationDirectory: destinationDirectory)
+        selectedFilter = .all
+        searchText = ""
+        selectedDownloadID = id
+        isDetailVisible = true
+        return id
+    }
+
+    private func addTorrentFileDownload(from fileURL: URL, to destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let id = try await downloadStore.addTorrentDownload(fromFile: fileURL, destinationDirectory: destinationDirectory)
+        selectedFilter = .all
+        searchText = ""
+        selectedDownloadID = id
+        isDetailVisible = true
+        return id
+    }
+
+    private func addTorrentURLDownload(from urlString: String, to destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let id = try await downloadStore.addTorrentDownload(fromRemoteURL: urlString, destinationDirectory: destinationDirectory)
         selectedFilter = .all
         searchText = ""
         selectedDownloadID = id
