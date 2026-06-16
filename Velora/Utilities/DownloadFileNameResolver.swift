@@ -8,7 +8,7 @@ struct DownloadFileNameResolver {
         return URLSession(configuration: configuration)
     }()
 
-    static func suggestedFileName(from rawURL: String) async -> String? {
+    nonisolated static func suggestedFileName(from rawURL: String) async -> String? {
         guard let url = downloadURL(from: rawURL) else {
             return nil
         }
@@ -20,7 +20,7 @@ struct DownloadFileNameResolver {
         return localFileName(from: url)
     }
 
-    static func sanitizedFileName(_ rawFileName: String) -> String? {
+    nonisolated static func sanitizedFileName(_ rawFileName: String) -> String? {
         let trimmedFileName = rawFileName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedFileName.isEmpty else {
             return nil
@@ -45,7 +45,7 @@ struct DownloadFileNameResolver {
         return sanitized
     }
 
-    private static func remoteFileName(from url: URL) async -> String? {
+    private nonisolated static func remoteFileName(from url: URL) async -> String? {
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
 
@@ -72,12 +72,12 @@ struct DownloadFileNameResolver {
         }
     }
 
-    private static func localFileName(from url: URL) -> String? {
+    nonisolated static func localFileName(from url: URL) -> String? {
         let pathComponent = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
         return sanitizedFileName(pathComponent)
     }
 
-    private static func downloadURL(from rawURL: String) -> URL? {
+    nonisolated static func downloadURL(from rawURL: String) -> URL? {
         let trimmedURL = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmedURL),
               url.host != nil,
@@ -89,7 +89,7 @@ struct DownloadFileNameResolver {
         return url
     }
 
-    private static func fileName(fromContentDisposition header: String) -> String? {
+    nonisolated static func fileName(fromContentDisposition header: String) -> String? {
         let parameters = contentDispositionParameters(from: header)
 
         if let encodedFileName = parameters["filename*"],
@@ -106,7 +106,7 @@ struct DownloadFileNameResolver {
         return nil
     }
 
-    private static func contentDispositionParameters(from header: String) -> [String: String] {
+    private nonisolated static func contentDispositionParameters(from header: String) -> [String: String] {
         splitHeaderParameters(header)
             .dropFirst()
             .reduce(into: [:]) { parameters, part in
@@ -124,7 +124,7 @@ struct DownloadFileNameResolver {
             }
     }
 
-    private static func splitHeaderParameters(_ header: String) -> [String] {
+    private nonisolated static func splitHeaderParameters(_ header: String) -> [String] {
         var parts: [String] = []
         var current = ""
         var isInsideQuotes = false
@@ -162,7 +162,7 @@ struct DownloadFileNameResolver {
         return parts
     }
 
-    private static func unquotedHeaderValue(_ value: String) -> String {
+    private nonisolated static func unquotedHeaderValue(_ value: String) -> String {
         guard value.count >= 2, value.first == "\"", value.last == "\"" else {
             return value
         }
@@ -184,7 +184,7 @@ struct DownloadFileNameResolver {
         return unquoted
     }
 
-    private static func decodedExtendedFileName(_ value: String) -> String? {
+    private nonisolated static func decodedExtendedFileName(_ value: String) -> String? {
         let parts = value.split(separator: "'", maxSplits: 2, omittingEmptySubsequences: false)
         guard parts.count == 3 else {
             return value.removingPercentEncoding

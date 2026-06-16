@@ -133,13 +133,30 @@ final class DownloadStore: ObservableObject {
             try await startRuntimeIfNeeded()
             keepAccessToSecurityScopedDestination(destinationDirectory)
             try Self.ensureDirectoryExists(destinationDirectory)
-            let id = try await service.addDownload(from: url, destinationDirectory: destinationDirectory, fileName: fileName)
+            let id: DownloadItem.ID
+
+            if let torrentFile = try await TorrentFileResolver.remoteTorrentPayloadIfDetected(from: url, suggestedFileName: fileName) {
+                id = try await service.addTorrentDownload(torrentData: torrentFile.data, destinationDirectory: destinationDirectory)
+            } else {
+                id = try await service.addDownload(from: url, destinationDirectory: destinationDirectory, fileName: fileName)
+            }
+
             await refresh()
             return id
         } catch {
             loadState = .failed(error.localizedDescription)
             throw error
         }
+    }
+
+    func addTorrentDownload(fromFile fileURL: URL, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let torrentFile = try TorrentFileResolver.localTorrentPayload(from: fileURL)
+        return try await addTorrentDownload(torrentFile, destinationDirectory: destinationDirectory)
+    }
+
+    func addTorrentDownload(fromRemoteURL rawURL: String, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        let torrentFile = try await TorrentFileResolver.remoteTorrentPayload(from: rawURL)
+        return try await addTorrentDownload(torrentFile, destinationDirectory: destinationDirectory)
     }
 
     func addMagnetDownload(from rawMagnetURI: String, destinationDirectory: URL) async throws -> DownloadItem.ID {
@@ -236,6 +253,20 @@ final class DownloadStore: ObservableObject {
             try await startRuntimeIfNeeded()
             try await operation()
             await refresh()
+        } catch {
+            loadState = .failed(error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func addTorrentDownload(_ torrentFile: TorrentFilePayload, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        do {
+            try await startRuntimeIfNeeded()
+            keepAccessToSecurityScopedDestination(destinationDirectory)
+            try Self.ensureDirectoryExists(destinationDirectory)
+            let id = try await service.addTorrentDownload(torrentData: torrentFile.data, destinationDirectory: destinationDirectory)
+            await refresh()
+            return id
         } catch {
             loadState = .failed(error.localizedDescription)
             throw error

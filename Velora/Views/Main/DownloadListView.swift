@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Darwin
+import UniformTypeIdentifiers
 
 struct DownloadListView: View {
     let downloads: [DownloadItem]
@@ -8,6 +9,8 @@ struct DownloadListView: View {
     @Binding var searchText: String
     let onAddDownload: (String, URL, String?) async throws -> DownloadItem.ID
     let onAddMagnetDownload: (String, URL) async throws -> DownloadItem.ID
+    let onAddTorrentFileDownload: (URL, URL) async throws -> DownloadItem.ID
+    let onAddTorrentURLDownload: (String, URL) async throws -> DownloadItem.ID
     let onPerformCommand: (DownloadCommand, DownloadItem) -> Void
     let onSelectDownload: (DownloadItem) -> Void
     let pendingPauseDownloadIDs: Set<DownloadItem.ID>
@@ -27,6 +30,8 @@ struct DownloadListView: View {
                 selectedDownload: selectedDownload,
                 onAddDownload: onAddDownload,
                 onAddMagnetDownload: onAddMagnetDownload,
+                onAddTorrentFileDownload: onAddTorrentFileDownload,
+                onAddTorrentURLDownload: onAddTorrentURLDownload,
                 onPerformCommand: onPerformCommand
             )
 
@@ -63,9 +68,12 @@ private struct DownloadToolbar: View {
     let selectedDownload: DownloadItem?
     let onAddDownload: (String, URL, String?) async throws -> DownloadItem.ID
     let onAddMagnetDownload: (String, URL) async throws -> DownloadItem.ID
+    let onAddTorrentFileDownload: (URL, URL) async throws -> DownloadItem.ID
+    let onAddTorrentURLDownload: (String, URL) async throws -> DownloadItem.ID
     let onPerformCommand: (DownloadCommand, DownloadItem) -> Void
     @State private var isAddingDownload = false
     @State private var isAddingMagnetDownload = false
+    @State private var isAddingTorrentDownload = false
 
     private var canPauseSelectedDownload: Bool {
         selectedDownload?.status == .active
@@ -91,6 +99,9 @@ private struct DownloadToolbar: View {
                 },
                 onAddMagnetDownload: {
                     isAddingMagnetDownload = true
+                },
+                onAddTorrentDownload: {
+                    isAddingTorrentDownload = true
                 }
             )
 
@@ -148,6 +159,12 @@ private struct DownloadToolbar: View {
         .sheet(isPresented: $isAddingMagnetDownload) {
             AddMagnetDownloadSheet(onAddMagnetDownload: onAddMagnetDownload)
         }
+        .sheet(isPresented: $isAddingTorrentDownload) {
+            AddBitTorrentDownloadSheet(
+                onAddTorrentFileDownload: onAddTorrentFileDownload,
+                onAddTorrentURLDownload: onAddTorrentURLDownload
+            )
+        }
     }
 
     private func perform(_ command: DownloadCommand) {
@@ -162,6 +179,7 @@ private struct DownloadToolbar: View {
 private struct AddDownloadSplitButton: View {
     let onAddFileDownload: () -> Void
     let onAddMagnetDownload: () -> Void
+    let onAddTorrentDownload: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -183,6 +201,10 @@ private struct AddDownloadSplitButton: View {
             Menu {
                 Button(action: onAddMagnetDownload) {
                     Label("Magnet Link", systemImage: "link.circle")
+                }
+
+                Button(action: onAddTorrentDownload) {
+                    Label("BitTorrent", systemImage: "doc.badge.plus")
                 }
             } label: {
                 Text("")
@@ -597,6 +619,396 @@ private struct AddMagnetDownloadSheet: View {
             }
 
             isSubmitting = false
+        }
+    }
+}
+
+private enum BitTorrentInputMode: String, CaseIterable, Identifiable {
+    case file
+    case url
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .file:
+            "File"
+        case .url:
+            "URL"
+        }
+    }
+}
+
+private struct AddBitTorrentDownloadSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var isURLFieldFocused: Bool
+
+    let onAddTorrentFileDownload: (URL, URL) async throws -> DownloadItem.ID
+    let onAddTorrentURLDownload: (String, URL) async throws -> DownloadItem.ID
+
+    @State private var inputMode: BitTorrentInputMode = .file
+    @State private var torrentFileURL: URL?
+    @State private var localCandidate: TorrentFileCandidate?
+    @State private var torrentURLString = ""
+    @State private var remoteCandidate: TorrentFileCandidate?
+    @State private var destinationDirectoryURL = DefaultDownloadDestination.url
+    @State private var errorMessage: String?
+    @State private var isSubmitting = false
+    @State private var isResolvingRemoteTorrent = false
+
+    private var trimmedTorrentURL: String {
+        torrentURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var activeCandidate: TorrentFileCandidate? {
+        switch inputMode {
+        case .file:
+            localCandidate
+        case .url:
+            remoteCandidate
+        }
+    }
+
+    private var canSubmit: Bool {
+        guard !isSubmitting else {
+            return false
+        }
+
+        switch inputMode {
+        case .file:
+            return torrentFileURL != nil && localCandidate?.isLikelyTorrent == true
+        case .url:
+            return !trimmedTorrentURL.isEmpty && remoteCandidate?.isLikelyTorrent == true && !isResolvingRemoteTorrent
+        }
+    }
+
+    private var destinationDisplayName: String {
+        let displayName = FileManager.default.displayName(atPath: destinationDirectoryURL.path)
+        return displayName.isEmpty ? destinationDirectoryURL.lastPathComponent : displayName
+    }
+
+    private var destinationPathDisplay: String {
+        let path = destinationDirectoryURL.path(percentEncoded: false)
+        let homePath = DefaultDownloadDestination.userHomeDirectoryURL.path(percentEncoded: false)
+
+        guard path == homePath || path.hasPrefix("\(homePath)/") else {
+            return path
+        }
+
+        return "~" + path.dropFirst(homePath.count)
+    }
+
+    private var isUsingDefaultDestination: Bool {
+        destinationDirectoryURL.standardizedFileURL == DefaultDownloadDestination.url.standardizedFileURL
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.badge.plus")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.12))
+                    )
+
+                Text("New BitTorrent Download")
+                    .font(.headline)
+
+                Spacer()
+            }
+
+            Picker("Source", selection: $inputMode) {
+                ForEach(BitTorrentInputMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(isSubmitting)
+            .onChange(of: inputMode) { _, newMode in
+                errorMessage = nil
+                if newMode == .url {
+                    isURLFieldFocused = true
+                }
+            }
+
+            switch inputMode {
+            case .file:
+                torrentFilePicker
+            case .url:
+                torrentURLPicker
+            }
+
+            if let activeCandidate {
+                TorrentFileSummaryCard(candidate: activeCandidate)
+            }
+
+            DestinationPickerCard(
+                isSubmitting: isSubmitting,
+                destinationDisplayName: destinationDisplayName,
+                destinationPathDisplay: destinationPathDisplay,
+                isUsingDefaultDestination: isUsingDefaultDestination,
+                resetDestinationDirectory: resetDestinationDirectory,
+                chooseDestinationDirectory: chooseDestinationDirectory
+            )
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .labelStyle(.titleAndIcon)
+            }
+
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    dismiss()
+                }
+                .disabled(isSubmitting)
+
+                Button {
+                    submit()
+                } label: {
+                    if isSubmitting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Add", systemImage: "plus")
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(!canSubmit)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+        .onAppear {
+            destinationDirectoryURL = DefaultDownloadDestination.url
+        }
+        .task(id: trimmedTorrentURL) {
+            await resolveRemoteTorrent(for: trimmedTorrentURL)
+        }
+    }
+
+    private var torrentFilePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Torrent File")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                Button {
+                    chooseTorrentFile()
+                } label: {
+                    Label(localCandidate == nil ? "Choose..." : "Change...", systemImage: "doc.badge.plus")
+                }
+                .disabled(isSubmitting)
+
+                if localCandidate == nil {
+                    Text("Choose a .torrent file.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+        }
+    }
+
+    private var torrentURLPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Torrent URL")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if isResolvingRemoteTorrent {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            TextField("https://example.com/file.torrent", text: $torrentURLString)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1)
+                .focused($isURLFieldFocused)
+                .disabled(isSubmitting)
+                .onSubmit {
+                    submit()
+                }
+
+            if !trimmedTorrentURL.isEmpty, !isResolvingRemoteTorrent, remoteCandidate == nil {
+                Label("Enter a torrent file URL.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .labelStyle(.titleAndIcon)
+            }
+        }
+    }
+
+    private func chooseTorrentFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.message = "Choose a BitTorrent file."
+        panel.prompt = "Choose"
+
+        if let torrentType = UTType(filenameExtension: "torrent") {
+            panel.allowedContentTypes = [torrentType]
+        }
+
+        if panel.runModal() == .OK, let url = panel.url {
+            torrentFileURL = url
+            localCandidate = TorrentFileResolver.localCandidate(from: url)
+            errorMessage = localCandidate == nil ? "Choose a valid torrent file." : nil
+        }
+    }
+
+    private func chooseDestinationDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = destinationDirectoryURL
+        panel.message = "Choose a folder for this download."
+        panel.prompt = "Choose"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            destinationDirectoryURL = url
+        }
+    }
+
+    private func resetDestinationDirectory() {
+        destinationDirectoryURL = DefaultDownloadDestination.url
+    }
+
+    private func resolveRemoteTorrent(for rawURL: String) async {
+        guard inputMode == .url else {
+            return
+        }
+
+        guard !rawURL.isEmpty else {
+            isResolvingRemoteTorrent = false
+            remoteCandidate = nil
+            return
+        }
+
+        isResolvingRemoteTorrent = true
+        remoteCandidate = nil
+
+        do {
+            try await Task.sleep(for: .milliseconds(450))
+        } catch {
+            isResolvingRemoteTorrent = false
+            return
+        }
+
+        let candidate = await TorrentFileResolver.remoteCandidate(from: rawURL)
+
+        guard !Task.isCancelled, rawURL == trimmedTorrentURL else {
+            return
+        }
+
+        remoteCandidate = candidate
+        isResolvingRemoteTorrent = false
+    }
+
+    private func submit() {
+        guard canSubmit else {
+            return
+        }
+
+        isSubmitting = true
+        errorMessage = nil
+
+        Task {
+            do {
+                switch inputMode {
+                case .file:
+                    guard let torrentFileURL else {
+                        throw TorrentSheetError.missingTorrentFile
+                    }
+
+                    _ = try await onAddTorrentFileDownload(torrentFileURL, destinationDirectoryURL)
+                case .url:
+                    _ = try await onAddTorrentURLDownload(trimmedTorrentURL, destinationDirectoryURL)
+                }
+
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+
+            isSubmitting = false
+        }
+    }
+}
+
+private struct TorrentFileSummaryCard: View {
+    let candidate: TorrentFileCandidate
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TorrentFileSummaryRow(title: "Name", value: candidate.displayName)
+
+            if let byteCount = candidate.byteCount {
+                TorrentFileSummaryRow(title: "Size", value: DownloadFormatters.bytes(byteCount))
+            }
+
+            if let contentType = candidate.contentType {
+                TorrentFileSummaryRow(title: "Type", value: contentType)
+            }
+        }
+        .padding(11)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(AppTheme.hairline, lineWidth: 1)
+        )
+    }
+}
+
+private struct TorrentFileSummaryRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 52, alignment: .leading)
+
+            Text(value)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private enum TorrentSheetError: LocalizedError {
+    case missingTorrentFile
+
+    var errorDescription: String? {
+        switch self {
+        case .missingTorrentFile:
+            "Choose a torrent file."
         }
     }
 }

@@ -12,6 +12,7 @@ final class Aria2DownloadService: DownloadService {
         "followedBy",
         "following",
         "belongsTo",
+        "bittorrent",
         "dir",
         "files"
     ]
@@ -97,6 +98,17 @@ final class Aria2DownloadService: DownloadService {
             params: [
                 [magnetURI],
                 options
+            ]
+        )
+    }
+
+    func addTorrentDownload(torrentData: Data, destinationDirectory: URL) async throws -> DownloadItem.ID {
+        try await call(
+            method: "aria2.addTorrent",
+            params: [
+                torrentData.base64EncodedString(),
+                [],
+                ["dir": destinationDirectory.path]
             ]
         )
     }
@@ -200,6 +212,7 @@ private struct Aria2Status: Decodable {
     let followedBy: [String]?
     let following: String?
     let belongsTo: String?
+    let bittorrent: Aria2Bittorrent?
     let dir: String?
     let files: [Aria2File]?
 
@@ -223,7 +236,8 @@ private struct Aria2Status: Decodable {
             remainingSeconds: remainingSeconds,
             connections: connections?.intValue ?? 0,
             localFilePaths: localFilePaths,
-            isMetadataPlaceholder: isMetadataDownload
+            isMetadataPlaceholder: isMetadataDownload,
+            sourceKind: sourceKind
         )
     }
 
@@ -259,6 +273,27 @@ private struct Aria2Status: Decodable {
 
     private var primaryFile: Aria2File? {
         files?.first
+    }
+
+    private var sourceKind: DownloadSourceKind {
+        let normalizedSource = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if normalizedSource.hasPrefix("magnet:?") {
+            return .magnet
+        }
+
+        if bittorrent != nil {
+            return .bittorrent
+        }
+
+        guard let url = URL(string: source),
+              url.host != nil,
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "ftp"].contains(scheme) else {
+            return .unknown
+        }
+
+        return .file
     }
 
     var normalizedInfoHash: String? {
@@ -342,6 +377,8 @@ private struct Aria2File: Decodable {
     let path: String?
     let uris: [Aria2URI]?
 }
+
+private struct Aria2Bittorrent: Decodable {}
 
 private struct Aria2URI: Decodable {
     let uri: String

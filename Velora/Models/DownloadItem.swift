@@ -15,6 +15,7 @@ struct DownloadItem: Identifiable, Hashable {
     let connections: Int
     let localFilePaths: [String]
     let isMetadataPlaceholder: Bool
+    let sourceKind: DownloadSourceKind
 
     var remainingBytes: Int64 {
         max(totalBytes - downloadedBytes, 0)
@@ -35,18 +36,20 @@ struct DownloadItem: Identifiable, Hashable {
             return false
         }
 
-        if trimmedSource.lowercased().hasPrefix("magnet:?") {
+        switch sourceKind {
+        case .file, .magnet:
             return true
-        }
-
-        guard let url = URL(string: trimmedSource),
-              url.host != nil,
-              let scheme = url.scheme?.lowercased() else {
+        case .bittorrent, .unknown:
             return false
         }
-
-        return ["http", "https", "ftp"].contains(scheme)
     }
+}
+
+enum DownloadSourceKind: String, Hashable {
+    case file
+    case magnet
+    case bittorrent
+    case unknown
 }
 
 enum DownloadStatus: String, CaseIterable {
