@@ -52,6 +52,12 @@ struct VeloraApp: App {
         .commands {
             FileMenuCommands()
         }
+
+        Settings {
+            SettingsView {
+                try await downloadStore.restartRuntime()
+            }
+        }
     }
 }
 

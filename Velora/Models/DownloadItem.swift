@@ -14,6 +14,7 @@ struct DownloadItem: Identifiable, Hashable {
     let remainingSeconds: TimeInterval?
     let connections: Int
     let localFilePaths: [String]
+    let isMetadataPlaceholder: Bool
 
     var remainingBytes: Int64 {
         max(totalBytes - downloadedBytes, 0)
@@ -25,6 +26,26 @@ struct DownloadItem: Identifiable, Hashable {
         }
 
         return URL(fileURLWithPath: destination)
+    }
+
+    var isRestartable: Bool {
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedSource.isEmpty, !isMetadataPlaceholder else {
+            return false
+        }
+
+        if trimmedSource.lowercased().hasPrefix("magnet:?") {
+            return true
+        }
+
+        guard let url = URL(string: trimmedSource),
+              url.host != nil,
+              let scheme = url.scheme?.lowercased() else {
+            return false
+        }
+
+        return ["http", "https", "ftp"].contains(scheme)
     }
 }
 
