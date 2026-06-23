@@ -1,27 +1,37 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject var presentationController: AppPresentationController
     let onRestartRuntime: () async throws -> Void
 
     @StateObject private var configurationStore = AppConfigurationStore()
-    @State private var selectedSection: SettingsSection = .magnetLinks
+    @State private var selectedSection: SettingsSection = .general
     @State private var presentationToken = UUID()
 
     var body: some View {
         HStack(spacing: 0) {
             List(selection: $selectedSection) {
-                Label(SettingsSection.magnetLinks.title, systemImage: SettingsSection.magnetLinks.symbolName)
-                    .tag(SettingsSection.magnetLinks)
+                ForEach(SettingsSection.allCases) { section in
+                    Label(section.title, systemImage: section.symbolName)
+                        .tag(section)
+                }
             }
             .listStyle(.sidebar)
             .frame(width: 180)
 
             Divider()
 
-            MagnetLinkSettingsPane(configurationStore: configurationStore)
-                .environment(\.restartDownloadRuntime, onRestartRuntime)
-                .id(presentationToken)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                switch selectedSection {
+                case .general:
+                    GeneralSettingsPane(presentationController: presentationController)
+                case .magnetLinks:
+                    MagnetLinkSettingsPane(configurationStore: configurationStore)
+                        .environment(\.restartDownloadRuntime, onRestartRuntime)
+                        .id(presentationToken)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 720, height: 380)
         .onAppear {
@@ -35,12 +45,15 @@ struct SettingsView: View {
 }
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
+    case general
     case magnetLinks
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .general:
+            "General"
         case .magnetLinks:
             "Magnet Links"
         }
@@ -48,9 +61,48 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
     var symbolName: String {
         switch self {
+        case .general:
+            "gearshape"
         case .magnetLinks:
             "link.circle"
         }
+    }
+}
+
+private struct GeneralSettingsPane: View {
+    @ObservedObject var presentationController: AppPresentationController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("General")
+                .font(.title2.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(
+                    "Show Velora in the menu bar",
+                    isOn: $presentationController.isMenuBarIconEnabled
+                )
+                .font(.headline)
+
+                Text("When enabled, closing the main window keeps Velora available from the menu bar and removes it from the Dock. Downloads continue in the background.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(AppTheme.subtleFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(AppTheme.hairline, lineWidth: 1)
+            )
+
+            Spacer()
+        }
+        .padding(22)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -260,6 +312,6 @@ private extension EnvironmentValues {
 
 #if DEBUG
 #Preview {
-    SettingsView {}
+    SettingsView(presentationController: AppPresentationController()) {}
 }
 #endif
